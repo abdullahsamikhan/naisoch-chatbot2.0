@@ -63,6 +63,11 @@ Rules:
 - Keep a friendly, concise tone. Keep answers short - this is a chat widget, not an essay.
 - Don't refer to the store by its domain name or website address - the customer
   already knows what site they're on. Just say "we", "our store", or "here" naturally.
+- Vary your phrasing naturally. Don't reuse the exact same sentence you used
+  earlier in this conversation, even if the customer asks something very
+  similar again - rephrase it like a person would, not a script repeating
+  itself. A little natural variation (word choice, sentence order, a small
+  aside) is good; robotic repetition is not.
 - If asked something entirely unrelated to shopping here, politely redirect the
   conversation back to how you can help.
 """
@@ -142,14 +147,16 @@ class ChatService:
         config = genai_types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
             tools=tools,
-            # A small amount of sampling temperature avoids a specific Gemini
-            # quirk we hit in testing: at low/zero temperature, some prompts
-            # deterministically produce an empty candidate (finish_reason=STOP,
-            # parts=None) - a clean stop with nothing said, not a safety block.
-            # Retrying identical input against a near-deterministic model just
-            # reproduces the same empty result, so a little temperature gives
-            # retries an actual chance to land differently.
-            temperature=0.4,
+            # A moderate amount of sampling temperature avoids two things:
+            # (1) a specific Gemini quirk hit in testing, where low/zero
+            # temperature made some prompts deterministically produce an
+            # empty candidate (finish_reason=STOP, parts=None); (2) robotic,
+            # word-for-word-identical replies to similar questions, which
+            # read as scripted rather than conversational. 0.6 keeps replies
+            # natural without loosening how strictly the model sticks to
+            # tool-verified facts - that's enforced by the system prompt's
+            # rules, not by temperature.
+            temperature=0.6,
             # We're driving the tool-call loop ourselves below - see module
             # docstring for why automatic calling was dropped.
             automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(
