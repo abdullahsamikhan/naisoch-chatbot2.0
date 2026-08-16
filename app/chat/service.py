@@ -14,6 +14,13 @@ ourselves: send a turn, check for function_call parts, execute them, append
 the results as a new turn, and loop until the model returns plain text. Same
 tools, same behavior from the customer's side, but no reliance on the buggy
 internal path.
+
+reply() returns (text, products): products is a compact list of dicts for
+any specific items the model looked up via get_product_details this turn -
+used by the API layer to render product cards alongside the text reply. This
+is a pure addition (see tools.py's `collected_products` side channel) - it
+does not change the tool-calling loop, retry behavior, or temperature
+handling above; those stay exactly as they were.
 """
 import json
 
@@ -26,21 +33,26 @@ from app.config import Settings
 from app.shopify.graphql_client import ShopifyGraphQLClient
 from app.shopify.singleton import get_token_manager
 
-SYSTEM_PROMPT = """You are the storefront shopping assistant for naisoch.com.pk.
+SYSTEM_PROMPT = """You are the shopping assistant for this store's live chat widget.
 
 Rules:
-- Answer only questions about naisoch.com.pk's products, availability, and store policies.
+- Answer only questions about this store's products, availability, and policies.
 - NEVER state a price or stock status from memory or by guessing. Always call
   search_products to find candidates, then get_product_details before quoting an
   exact price or availability to the customer.
 - NEVER invent a store policy. Always call get_store_policy for shipping, returns,
   payment, sizing, or contact questions.
+- When you recommend or confirm a specific product, keep your written reply short.
+  A product card (image, price, stock status) is shown to the customer automatically
+  right after your reply, so don't repeat all of those details in text - a brief
+  sentence introducing or contextualizing the product is enough.
 - If you don't have enough information after calling the available tools, say so
   plainly and suggest the customer contact support - do not make something up.
-- Keep a friendly, concise tone consistent with a small independent fashion/retail
-  brand. Keep answers short - this is a chat widget, not an essay.
-- If asked something entirely unrelated to naisoch.com.pk, politely redirect the
-  conversation back to how you can help with their shopping.
+- Keep a friendly, concise tone. Keep answers short - this is a chat widget, not an essay.
+- Don't refer to the store by its domain name or website address - the customer
+  already knows what site they're on. Just say "we", "our store", or "here" naturally.
+- If asked something entirely unrelated to shopping here, politely redirect the
+  conversation back to how you can help.
 """
 
 MAX_TOOL_ITERATIONS = 6
@@ -66,9 +78,9 @@ class ChatService:
         self._gql_client = ShopifyGraphQLClient(settings, get_token_manager(settings))
         self._catalog_search = CatalogSearch(settings)
 
-    def reply(self, history: list[ChatMessage]) -> str:
+    def reply(self, history: list[ChatMessage]) -> tuple[str, list[dict]]:
         if not history:
-            return "Hi! What can I help you find today?"
+            return "Hi! What can I help you find today?", []
 
         result = self._run(history)
         if result is not None:
@@ -92,14 +104,17 @@ class ChatService:
         if result is not None:
             return result
 
-        return "Sorry, I couldn't come up with an answer to that - could you rephrase?"
+        return "Sorry, I couldn't come up with an answer to that - could you rephrase?", []
 
-    def _run(self, history: list[ChatMessage]) -> str | None:
-        """Runs the manual tool-calling loop once. Returns the final text
-        reply, or None if the model produced neither a function call nor any
-        text on a turn (occasional empty/blocked candidate - genuine model
-        variance, not a code bug) - callers decide whether to retry that."""
-        tools = build_tools(self._settings, self._gql_client, self._catalog_search)
+    def _run(self, history: list[ChatMessage]) -> tuple[str, list[dict]] | None:
+        """Runs the manual tool-calling loop once. Returns (text, products),
+        or None if the model produced neither a function call nor any text on
+        a turn (occasional empty/blocked candidate - genuine model variance,
+        not a code bug) - callers decide whether to retry that."""
+        collected_products: list[dict] = []
+        tools = build_tools(
+            self._settings, self._gql_client, self._catalog_search, collected_products
+        )
         tool_functions = {fn.__name__: fn for fn in tools}
 
         contents = _to_genai_contents(history)
@@ -140,7 +155,9 @@ class ChatService:
             ]
 
             if not function_calls:
-                return response.text or None
+                if response.text:
+                    return response.text, collected_products[:4]
+                return None
 
             response_parts = []
             for call in function_calls:
@@ -163,4 +180,7 @@ class ChatService:
         # Exceeded MAX_TOOL_ITERATIONS without a final text answer - genuinely
         # stuck in a tool-call loop rather than a one-off empty candidate, so
         # don't bother retrying this one.
-        return "Sorry, I'm having trouble answering that right now - could you try again or contact support?"
+        return (
+            "Sorry, I'm having trouble answering that right now - could you try again or contact support?",
+            collected_products[:4],
+        )

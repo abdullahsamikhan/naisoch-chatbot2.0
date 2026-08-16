@@ -21,12 +21,19 @@ def build_tools(
     settings: Settings,
     gql_client: ShopifyGraphQLClient,
     catalog_search: CatalogSearch,
+    collected_products: list[dict] | None = None,
 ):
+    """`collected_products`, if given, is appended to (as a side effect) every
+    time get_product_details fetches a real product - so the caller ends up
+    with a compact record of exactly which products actually got looked up
+    with live data, for rendering as UI cards. This doesn't change anything
+    about what the model sees or how the tool-calling loop behaves - it's a
+    side channel, not a change to the model-facing contract."""
     with open(settings.policies_path, encoding="utf-8") as f:
         policies = json.load(f)
 
     def search_products(query: str) -> str:
-        """Search the naisoch.com.pk product catalog by meaning, not exact
+        """Search the store's product catalog by meaning, not exact
         keywords. Use this whenever the customer describes something they
         want, asks what's available, or asks for recommendations. Returns
         up to 5 matching products with cached price/availability - call
@@ -66,12 +73,31 @@ def build_tools(
         product = data.get("product")
         if not product:
             return "Product not found."
+
+        if collected_products is not None:
+            price_info = (product.get("priceRangeV2") or {}).get("minVariantPrice") or {}
+            card = {
+                "product_id": product.get("id"),
+                "title": product.get("title"),
+                "price": price_info.get("amount"),
+                "currency": price_info.get("currencyCode"),
+                "in_stock": (product.get("totalInventory") or 0) > 0,
+                "image_url": (product.get("featuredImage") or {}).get("url"),
+                "handle": product.get("handle"),
+            }
+            # De-dupe by product_id, keeping the freshest lookup if the model
+            # checks the same product more than once in one turn.
+            collected_products[:] = [
+                p for p in collected_products if p["product_id"] != card["product_id"]
+            ]
+            collected_products.append(card)
+
         return json.dumps(product)
 
     def get_store_policy(topic: str) -> str:
-        """Look up naisoch.com.pk's store policy on a given topic. Use this
-        for any question about shipping, returns, payment methods, sizing,
-        or how to contact support - never guess at policy details.
+        """Look up the store's policy on a given topic. Use this for any
+        question about shipping, returns, payment methods, sizing, or how
+        to contact support - never guess at policy details.
 
         Args:
             topic: one of "shipping", "returns", "payment", "sizing", "contact".

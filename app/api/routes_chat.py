@@ -21,8 +21,18 @@ class ChatRequest(BaseModel):
     history: list[ChatTurn] = Field(default_factory=list)
 
 
+class ProductCard(BaseModel):
+    title: str | None = None
+    price: str | None = None
+    currency: str | None = None
+    in_stock: bool = False
+    image_url: str | None = None
+    handle: str | None = None
+
+
 class ChatResponse(BaseModel):
     reply: str
+    products: list[ProductCard] = Field(default_factory=list)
 
 
 _chat_service: ChatService | None = None
@@ -44,5 +54,16 @@ def chat(
 ):
     history = [ChatMessage(role=t.role, content=t.content) for t in body.history]
     history.append(ChatMessage(role="user", content=body.message))
-    reply = service.reply(history)
-    return ChatResponse(reply=reply)
+    reply_text, products = service.reply(history)
+    cards = [
+        ProductCard(
+            title=p.get("title"),
+            price=p.get("price"),
+            currency=p.get("currency"),
+            in_stock=bool(p.get("in_stock")),
+            image_url=p.get("image_url"),
+            handle=p.get("handle"),
+        )
+        for p in products
+    ]
+    return ChatResponse(reply=reply_text, products=cards)

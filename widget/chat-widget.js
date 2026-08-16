@@ -1,5 +1,5 @@
 /**
- * naisoch.com.pk storefront chat widget.
+ * Storefront chat widget.
  * Dependency-free vanilla JS - drop this into theme.liquid via a <script> tag.
  *
  * Usage in theme.liquid, just before </body>:
@@ -13,8 +13,10 @@
 
   var scriptTag = document.currentScript;
   var API_URL = (scriptTag && scriptTag.getAttribute("data-api-url")) || "/chat";
+  var GREETING = "Hi there! How can I help you find something today?";
 
   var history = []; // [{role: "user"|"model", content: "..."}]
+  var hasGreeted = false; // client-side only - never sent to the backend or added to `history`
 
   function el(tag, props, children) {
     var node = document.createElement(tag);
@@ -43,7 +45,20 @@
       ".nsc-msg.model{text-align:left;color:#333}" +
       "#nsc-form{display:flex;border-top:1px solid #eee}" +
       "#nsc-input{flex:1;border:none;padding:10px;font-size:14px;outline:none}" +
-      "#nsc-send{border:none;background:#111;color:#fff;padding:0 16px;cursor:pointer}";
+      "#nsc-send{border:none;background:#111;color:#fff;padding:0 16px;cursor:pointer}" +
+      /* product cards */
+      ".nsc-cards{display:flex;flex-direction:column;gap:8px;margin:4px 0 12px}" +
+      ".nsc-card{display:flex;gap:10px;border:1px solid #eee;border-radius:10px;" +
+      "padding:8px;align-items:center;text-align:left}" +
+      ".nsc-card-img{width:48px;height:48px;border-radius:6px;object-fit:cover;" +
+      "background:#f2f2f2;flex-shrink:0}" +
+      ".nsc-card-body{flex:1;min-width:0}" +
+      ".nsc-card-title{font-weight:600;font-size:13px;white-space:nowrap;" +
+      "overflow:hidden;text-overflow:ellipsis}" +
+      ".nsc-card-price{font-size:13px;color:#111;margin-top:2px}" +
+      ".nsc-card-stock{font-size:11px;margin-top:2px}" +
+      ".nsc-card-stock.in{color:#1a7f37}" +
+      ".nsc-card-stock.out{color:#b42318}";
     document.head.appendChild(style);
   }
 
@@ -52,6 +67,51 @@
     var bubble = el("div", { className: "nsc-msg " + role }, [content]);
     messages.appendChild(bubble);
     messages.scrollTop = messages.scrollHeight;
+    return bubble;
+  }
+
+  function appendProductCards(products) {
+    if (!products || !products.length) return;
+    var messages = document.getElementById("nsc-messages");
+    var wrap = el("div", { className: "nsc-cards" });
+
+    products.forEach(function (p) {
+      var img = el("img", {
+        className: "nsc-card-img",
+        src: p.image_url || "",
+        alt: p.title || "",
+      });
+      var priceText =
+        p.price != null && p.currency
+          ? p.currency + " " + p.price
+          : p.price != null
+          ? String(p.price)
+          : "";
+      var stockLabel = p.in_stock ? "In stock" : "Out of stock";
+      var stockClass = p.in_stock ? "in" : "out";
+
+      var card = el("div", { className: "nsc-card" }, [
+        img,
+        el("div", { className: "nsc-card-body" }, [
+          el("div", { className: "nsc-card-title" }, [p.title || "Product"]),
+          el("div", { className: "nsc-card-price" }, [priceText]),
+          el("div", { className: "nsc-card-stock " + stockClass }, [stockLabel]),
+        ]),
+      ]);
+      wrap.appendChild(card);
+    });
+
+    messages.appendChild(wrap);
+    messages.scrollTop = messages.scrollHeight;
+  }
+
+  function showGreeting() {
+    if (hasGreeted) return;
+    hasGreeted = true;
+    // Client-side only: not sent to the API, not added to `history`. Keeps
+    // the greeting instant (no network round-trip) and keeps the server's
+    // conversation state exactly what it was before this feature existed.
+    appendMessage("model", GREETING);
   }
 
   async function sendMessage(text) {
@@ -74,11 +134,12 @@
       var data = await res.json();
       thinking.remove();
       appendMessage("model", data.reply);
+      appendProductCards(data.products);
       history.push({ role: "model", content: data.reply });
     } catch (err) {
       thinking.remove();
       appendMessage("model", "Sorry, something went wrong. Please try again.");
-      console.error("naisoch chat widget error:", err);
+      console.error("chat widget error:", err);
     }
   }
 
@@ -96,7 +157,9 @@
     ]);
 
     launcher.addEventListener("click", function () {
+      var wasOpen = panel.classList.contains("open");
       panel.classList.toggle("open");
+      if (!wasOpen) showGreeting();
     });
 
     panel.querySelector("#nsc-form").addEventListener("submit", function (e) {
