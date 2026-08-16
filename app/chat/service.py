@@ -105,21 +105,27 @@ class ChatService:
 
         # First attempt came back genuinely empty (finish_reason=STOP,
         # parts=None - confirmed via debug logging, not a safety block).
-        # Retrying with byte-identical input against a low-temperature model
-        # tends to reproduce the exact same empty result, so this retry adds
-        # a small system-side nudge as an extra turn - different input, real
-        # chance of a different outcome - rather than resending the same
-        # conversation verbatim.
-        nudge = ChatMessage(
-            role="user",
-            content=(
-                f"{history[-1].content}\n\n"
-                "(Please use the available tools to answer this.)"
+        # Retrying with byte-identical input against the model tends to
+        # reproduce the exact same empty result, so each retry adds a more
+        # explicit nudge - different input, real chance of a different
+        # outcome - rather than resending the same conversation verbatim.
+        # Two retries (three attempts total) because this quirk showed up
+        # twice in a row on short, ambiguous follow-ups like "show me" -
+        # one retry alone wasn't always enough headroom.
+        nudges = [
+            f"{history[-1].content}\n\n(Please use the available tools to answer this.)",
+            (
+                f"The customer's last message was: \"{history[-1].content}\". "
+                "Based on the conversation so far, figure out what they most "
+                "likely mean and answer using the available tools - don't "
+                "leave this unanswered."
             ),
-        )
-        result = self._run(history[:-1] + [nudge])
-        if result is not None:
-            return result
+        ]
+        for nudge_text in nudges:
+            nudge = ChatMessage(role="user", content=nudge_text)
+            result = self._run(history[:-1] + [nudge])
+            if result is not None:
+                return result
 
         return "Sorry, I couldn't come up with an answer to that - could you rephrase?", [], None
 
@@ -151,12 +157,15 @@ class ChatService:
             # (1) a specific Gemini quirk hit in testing, where low/zero
             # temperature made some prompts deterministically produce an
             # empty candidate (finish_reason=STOP, parts=None); (2) robotic,
-            # word-for-word-identical replies to similar questions, which
-            # read as scripted rather than conversational. 0.6 keeps replies
-            # natural without loosening how strictly the model sticks to
-            # tool-verified facts - that's enforced by the system prompt's
-            # rules, not by temperature.
-            temperature=0.6,
+            # word-for-word-identical replies to similar questions. 0.6 was
+            # tried first but made the empty-candidate quirk MORE frequent on
+            # short/ambiguous follow-ups ("show me") - 0.5 is the balance
+            # point: still enough variation for natural phrasing (that's
+            # mostly driven by the explicit prompt instruction below anyway,
+            # not by temperature), without reproducing the earlier reliability
+            # problem. If repetition is still noticeable, push the prompt
+            # instruction harder before raising this further.
+            temperature=0.5,
             # We're driving the tool-call loop ourselves below - see module
             # docstring for why automatic calling was dropped.
             automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(
