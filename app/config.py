@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     # Rate limiting
     chat_rate_limit: str = "10/minute"
 
+    # Human handoff - phone number the chat can hand off to on WhatsApp,
+    # digits only (country code + number, no "+", no spaces) since that's
+    # the format wa.me links require. Configurable rather than hardcoded so
+    # the number can change without a code deploy.
+    whatsapp_number: str = "923404235023"
+
     @property
     def data_path(self) -> Path:
         p = Path(self.data_dir)

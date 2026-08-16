@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from slowapi import Limiter
@@ -30,9 +32,15 @@ class ProductCard(BaseModel):
     handle: str | None = None
 
 
+class WhatsAppHandoff(BaseModel):
+    link: str
+    label: str = "Chat on WhatsApp"
+
+
 class ChatResponse(BaseModel):
     reply: str
     products: list[ProductCard] = Field(default_factory=list)
+    whatsapp: WhatsAppHandoff | None = None
 
 
 _chat_service: ChatService | None = None
@@ -45,16 +53,25 @@ def get_chat_service(settings: Settings = Depends(get_settings)) -> ChatService:
     return _chat_service
 
 
+def _build_whatsapp_link(settings: Settings, reason: str | None) -> str:
+    prefill = "Hi, I was chatting with the bot on your site"
+    if reason:
+        prefill += f" about: {reason}"
+    return f"https://wa.me/{settings.whatsapp_number}?text={quote(prefill)}"
+
+
 @router.post("/chat", response_model=ChatResponse)
 @limiter.limit(_rate_limit)
 def chat(
     request: Request,
     body: ChatRequest,
     service: ChatService = Depends(get_chat_service),
+    settings: Settings = Depends(get_settings),
 ):
     history = [ChatMessage(role=t.role, content=t.content) for t in body.history]
     history.append(ChatMessage(role="user", content=body.message))
-    reply_text, products = service.reply(history)
+    reply_text, products, whatsapp_offer = service.reply(history)
+
     cards = [
         ProductCard(
             title=p.get("title"),
@@ -66,4 +83,11 @@ def chat(
         )
         for p in products
     ]
-    return ChatResponse(reply=reply_text, products=cards)
+
+    whatsapp = None
+    if whatsapp_offer:
+        whatsapp = WhatsAppHandoff(
+            link=_build_whatsapp_link(settings, whatsapp_offer.get("reason"))
+        )
+
+    return ChatResponse(reply=reply_text, products=cards, whatsapp=whatsapp)

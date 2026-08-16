@@ -15,12 +15,16 @@ the results as a new turn, and loop until the model returns plain text. Same
 tools, same behavior from the customer's side, but no reliance on the buggy
 internal path.
 
-reply() returns (text, products): products is a compact list of dicts for
-any specific items the model looked up via get_product_details this turn -
-used by the API layer to render product cards alongside the text reply. This
-is a pure addition (see tools.py's `collected_products` side channel) - it
-does not change the tool-calling loop, retry behavior, or temperature
-handling above; those stay exactly as they were.
+reply() returns (text, products, whatsapp):
+- products: a compact list of dicts for any specific items the model looked
+  up via get_product_details this turn - used by the API layer to render
+  product cards alongside the text reply.
+- whatsapp: None, or a dict like {"reason": "..."} if the model called
+  offer_whatsapp_handoff this turn - used by the API layer to attach a
+  "Chat on WhatsApp" button/link to the response.
+Both are pure additions (see tools.py's side-channel collectors) - they do
+not change the tool-calling loop, retry behavior, or temperature handling
+above; those stay exactly as they were.
 """
 import json
 
@@ -46,8 +50,16 @@ Rules:
   A product card (image, price, stock status) is shown to the customer automatically
   right after your reply, so don't repeat all of those details in text - a brief
   sentence introducing or contextualizing the product is enough.
+- Call offer_whatsapp_handoff when: the customer explicitly asks to talk to a
+  human/agent; they describe an order-specific problem (wrong item, damaged
+  item, missing order, a refund that needs manual review) that needs a real
+  person's judgment rather than generic policy text; or you've genuinely
+  exhausted what your tools can answer and they still need help. A "Chat on
+  WhatsApp" button is shown to the customer automatically when you call this -
+  don't also paste a phone number or link into your text reply, just briefly
+  let them know they can continue there.
 - If you don't have enough information after calling the available tools, say so
-  plainly and suggest the customer contact support - do not make something up.
+  plainly - do not make something up.
 - Keep a friendly, concise tone. Keep answers short - this is a chat widget, not an essay.
 - Don't refer to the store by its domain name or website address - the customer
   already knows what site they're on. Just say "we", "our store", or "here" naturally.
@@ -78,9 +90,9 @@ class ChatService:
         self._gql_client = ShopifyGraphQLClient(settings, get_token_manager(settings))
         self._catalog_search = CatalogSearch(settings)
 
-    def reply(self, history: list[ChatMessage]) -> tuple[str, list[dict]]:
+    def reply(self, history: list[ChatMessage]) -> tuple[str, list[dict], dict | None]:
         if not history:
-            return "Hi! What can I help you find today?", []
+            return "Hi! What can I help you find today?", [], None
 
         result = self._run(history)
         if result is not None:
@@ -104,16 +116,24 @@ class ChatService:
         if result is not None:
             return result
 
-        return "Sorry, I couldn't come up with an answer to that - could you rephrase?", []
+        return "Sorry, I couldn't come up with an answer to that - could you rephrase?", [], None
 
-    def _run(self, history: list[ChatMessage]) -> tuple[str, list[dict]] | None:
-        """Runs the manual tool-calling loop once. Returns (text, products),
-        or None if the model produced neither a function call nor any text on
-        a turn (occasional empty/blocked candidate - genuine model variance,
-        not a code bug) - callers decide whether to retry that."""
+    def _run(
+        self, history: list[ChatMessage]
+    ) -> tuple[str, list[dict], dict | None] | None:
+        """Runs the manual tool-calling loop once. Returns (text, products,
+        whatsapp), or None if the model produced neither a function call nor
+        any text on a turn (occasional empty/blocked candidate - genuine
+        model variance, not a code bug) - callers decide whether to retry
+        that."""
         collected_products: list[dict] = []
+        whatsapp_handoff: dict = {}
         tools = build_tools(
-            self._settings, self._gql_client, self._catalog_search, collected_products
+            self._settings,
+            self._gql_client,
+            self._catalog_search,
+            collected_products,
+            whatsapp_handoff,
         )
         tool_functions = {fn.__name__: fn for fn in tools}
 
@@ -156,7 +176,8 @@ class ChatService:
 
             if not function_calls:
                 if response.text:
-                    return response.text, collected_products[:4]
+                    whatsapp = whatsapp_handoff if whatsapp_handoff.get("offered") else None
+                    return response.text, collected_products[:4], whatsapp
                 return None
 
             response_parts = []
@@ -180,7 +201,9 @@ class ChatService:
         # Exceeded MAX_TOOL_ITERATIONS without a final text answer - genuinely
         # stuck in a tool-call loop rather than a one-off empty candidate, so
         # don't bother retrying this one.
+        whatsapp = whatsapp_handoff if whatsapp_handoff.get("offered") else None
         return (
             "Sorry, I'm having trouble answering that right now - could you try again or contact support?",
             collected_products[:4],
+            whatsapp,
         )

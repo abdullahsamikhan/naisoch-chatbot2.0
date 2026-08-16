@@ -22,13 +22,16 @@ def build_tools(
     gql_client: ShopifyGraphQLClient,
     catalog_search: CatalogSearch,
     collected_products: list[dict] | None = None,
+    whatsapp_handoff: dict | None = None,
 ):
     """`collected_products`, if given, is appended to (as a side effect) every
     time get_product_details fetches a real product - so the caller ends up
     with a compact record of exactly which products actually got looked up
-    with live data, for rendering as UI cards. This doesn't change anything
-    about what the model sees or how the tool-calling loop behaves - it's a
-    side channel, not a change to the model-facing contract."""
+    with live data, for rendering as UI cards. `whatsapp_handoff`, if given,
+    gets a single entry written into it (as a side effect) if the model calls
+    offer_whatsapp_handoff. Neither changes anything about what the model
+    sees or how the tool-calling loop behaves - both are side channels, not
+    changes to the model-facing contract."""
     with open(settings.policies_path, encoding="utf-8") as f:
         policies = json.load(f)
 
@@ -107,4 +110,28 @@ def build_tools(
             "No policy information found for that topic. Suggest the customer contact support directly.",
         )
 
-    return [search_products, get_product_details, get_store_policy]
+    def offer_whatsapp_handoff(reason: str) -> str:
+        """Offer to connect the customer with a real person on WhatsApp.
+        Call this when: the customer explicitly asks to talk to a human/agent;
+        they have an order-specific problem (wrong item, damaged item, missing
+        order, refund status) that needs a real person's judgment, not generic
+        policy text; or you've genuinely exhausted what the available tools
+        can answer and the customer still needs help. Do not call this for
+        ordinary product or policy questions you can already answer.
+
+        Args:
+            reason: one short phrase for why you're offering this (e.g.
+                "damaged item", "wants to speak to a person", "order status
+                needs manual lookup") - not shown to the customer verbatim,
+                just for internal context.
+        """
+        if whatsapp_handoff is not None:
+            whatsapp_handoff["reason"] = reason
+            whatsapp_handoff["offered"] = True
+        return (
+            "WhatsApp handoff offered to the customer - a button will be shown "
+            "to them automatically. Let them know briefly that they can "
+            "continue on WhatsApp for this."
+        )
+
+    return [search_products, get_product_details, get_store_policy, offer_whatsapp_handoff]
