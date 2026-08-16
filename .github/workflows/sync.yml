@@ -2,17 +2,18 @@ name: Sync Shopify catalog
 
 on:
   schedule:
-    # Every 4 hours. Adjust based on how often naisoch actually updates
-    # stock/prices - the spec suggested a 1-6 hour range. Cron is UTC.
     - cron: "0 */4 * * *"
-  # Lets you trigger a sync manually from the GitHub Actions tab too,
-  # without waiting for the schedule - handy right after adding new products.
   workflow_dispatch:
 
 jobs:
   sync:
     runs-on: ubuntu-latest
+
     steps:
       - name: Trigger /admin/sync
+        shell: pwsh
         run: |
-          Invoke-RestMethod -Uri "https://naisoch-chatbot20-production.up.railway.app/admin/sync" -Method POST -Headers @{"X-Admin-Secret"="504ef81c2ba379d6"}
+          Invoke-RestMethod `
+            -Uri "${{ vars.RAILWAY_APP_URL }}/admin/sync" `
+            -Method POST `
+            -Headers @{"X-Admin-Secret"="${{ secrets.ADMIN_SYNC_SECRET }}"}
